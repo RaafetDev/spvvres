@@ -1,73 +1,78 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PORT=3000
+ENV PORT=10000
 
 RUN apt-get update && apt-get install -y \
   curl \
-  ca-certificates \
   nodejs \
   npm \
-  util-linux \
+  ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Inline Node.js server
+# ---------------- server.js ----------------
 RUN cat << 'EOF' > server.js
 const http = require("http");
 const fs = require("fs");
 
-function getSshxLink() {
+const PORT = process.env.PORT || 10000;
+const SUID_FILE = "/tmp/sshx_link.txt";
+
+function getSuid() {
   try {
-    const log = fs.readFileSync("/tmp/sshx.log", "utf8");
-    const match = log.match(/https:\/\/sshx\.io\/\S+/);
-    return match ? match[0] : "not-ready";
+    return fs.readFileSync(SUID_FILE, "utf8").trim();
   } catch {
-    return "starting";
+    return "not-ready";
   }
 }
 
 const server = http.createServer((req, res) => {
-  res.setHeader("Content-Type", "application/json");
-
   if (req.url === "/") {
-    res.end(JSON.stringify({ message: "coming soon..." }));
-  } else if (req.url === "/halth") {
-    res.end(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      suid: getSshxLink()
-    }));
-  } else {
-    res.statusCode = 404;
-    res.end(JSON.stringify({ error: "Not Found" }));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ message: "welcome" }));
   }
+
+  if (req.url === "/halth") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      suid: getSuid()
+    }));
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
-server.listen(process.env.PORT, () => {
-  console.log("HTTP server running on", process.env.PORT);
+server.listen(PORT, () => {
+  console.log("HTTP server running on", PORT);
 });
 EOF
 
-# Startup script (TTY-safe)
+# ---------------- start.sh ----------------
 RUN cat << 'EOF' > start.sh
-#!/bin/bash
+#!/bin/sh
 set -e
 
-echo "[+] Starting sshx (PTY mode)..."
+echo "[+] Starting sshx..."
 
-# Fake a TTY so sshx does not exit
-script -q -c "curl -sSf https://sshx.io/get | sh" /tmp/sshx.log &
+# Start sshx and capture output
+curl -sSf https://sshx.io/get | sh -s -- --shell bash > /tmp/sshx.log 2>&1 &
 
-# Wait for sshx link
-echo "[+] Waiting for sshx link..."
-for i in {1..20}; do
-  if grep -q "https://sshx.io/" /tmp/sshx.log; then
-    echo "[+] sshx started"
-    break
-  fi
-  sleep 1
-done
+# Extract sshx link once it appears
+(
+  while true; do
+    LINK=$(grep -o 'https://sshx.io/[a-zA-Z0-9_-]*' /tmp/sshx.log | head -n 1)
+    if [ -n "$LINK" ]; then
+      echo "$LINK" > /tmp/sshx_link.txt
+      echo "[+] sshx link captured: $LINK"
+      break
+    fi
+    sleep 1
+  done
+) &
 
 echo "[+] Launching Node server"
 exec node server.js
@@ -75,6 +80,5 @@ EOF
 
 RUN chmod +x start.sh
 
-EXPOSE 3000
-
+EXPOSE 10000
 CMD ["./start.sh"]
