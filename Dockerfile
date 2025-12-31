@@ -12,22 +12,41 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# ---------------- server.js ----------------
 RUN cat << 'EOF' > server.js
 const http = require("http");
-const fs = require("fs");
+const { spawn } = require("child_process");
 
 const PORT = process.env.PORT || 10000;
-const SUID_FILE = "/tmp/sshx_link.txt";
+let sshxLink = "not-ready";
 
-function getSuid() {
-  try {
-    return fs.readFileSync(SUID_FILE, "utf8").trim();
-  } catch {
-    return "not-ready";
+// ---- start sshx and capture stdout ----
+console.log("[+] Starting sshx from Node...");
+
+const sshx = spawn("sh", ["-c", "curl -sSf https://sshx.io/get | sh"], {
+  stdio: ["ignore", "pipe", "pipe"]
+});
+
+sshx.stdout.on("data", (data) => {
+  const text = data.toString();
+  process.stdout.write(text);
+
+  // Extract sshx link once
+  const match = text.match(/https:\/\/sshx\.io\/[a-zA-Z0-9_-]+/);
+  if (match && sshxLink === "not-ready") {
+    sshxLink = match[0];
+    console.log("[+] sshx link captured:", sshxLink);
   }
-}
+});
 
+sshx.stderr.on("data", (data) => {
+  process.stderr.write(data.toString());
+});
+
+sshx.on("exit", (code) => {
+  console.error("[!] sshx exited with code", code);
+});
+
+// ---- HTTP server ----
 const server = http.createServer((req, res) => {
   if (req.url === "/") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -38,7 +57,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
       timestamp: new Date().toISOString(),
-      suid: getSuid()
+      suid: sshxLink
     }));
   }
 
@@ -51,34 +70,5 @@ server.listen(PORT, () => {
 });
 EOF
 
-# ---------------- start.sh ----------------
-RUN cat << 'EOF' > start.sh
-#!/bin/sh
-set -e
-
-echo "[+] Starting sshx..."
-
-# Start sshx and capture output
-curl -sSf https://sshx.io/get | sh -s -- --shell bash > /tmp/sshx.log 2>&1 &
-
-# Extract sshx link once it appears
-(
-  while true; do
-    LINK=$(grep -o 'https://sshx.io/[a-zA-Z0-9_-]*' /tmp/sshx.log | head -n 1)
-    if [ -n "$LINK" ]; then
-      echo "$LINK" > /tmp/sshx_link.txt
-      echo "[+] sshx link captured: $LINK"
-      break
-    fi
-    sleep 1
-  done
-) &
-
-echo "[+] Launching Node server"
-exec node server.js
-EOF
-
-RUN chmod +x start.sh
-
 EXPOSE 10000
-CMD ["./start.sh"]
+CMD ["node", "server.js"]
