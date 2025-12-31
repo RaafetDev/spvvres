@@ -17,43 +17,64 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install sshx
+RUN curl -sSf https://sshx.io/get | sh
+
 # Create app directory
 WORKDIR /app
 
 # Create Node.js server
 RUN cat > /app/server.js << 'EOF'
 const http = require('http');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 
 const PORT = process.env.PORT || 3000;
 let sshxLink = 'initializing...';
 
 // Execute sshx command and capture output
-console.log('Executing sshx command...');
-const sshxProcess = exec('curl -sSf https://sshx.io/get | sh', (error, stdout, stderr) => {
-  if (error) {
-    console.error('Error executing sshx:', error);
-    sshxLink = 'error: ' + error.message;
-    return;
-  }
+console.log('Starting sshx...');
+const sshxProcess = spawn('sshx', [], {
+  stdio: ['ignore', 'pipe', 'pipe']
+});
+
+let stdoutData = '';
+let stderrData = '';
+
+sshxProcess.stdout.on('data', (data) => {
+  const output = data.toString();
+  stdoutData += output;
+  console.log('SSHX stdout:', output);
   
-  console.log('SSHX stdout:', stdout);
-  console.log('SSHX stderr:', stderr);
-  
-  // Extract the sshx link from output
-  const linkMatch = stdout.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
+  // Try to extract link from stdout
+  const linkMatch = output.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
   if (linkMatch) {
     sshxLink = linkMatch[0];
     console.log('SSHX Link captured:', sshxLink);
-  } else {
-    // Try stderr if not in stdout
-    const linkMatchStderr = stderr.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
-    if (linkMatchStderr) {
-      sshxLink = linkMatchStderr[0];
-      console.log('SSHX Link captured from stderr:', sshxLink);
-    } else {
-      sshxLink = 'link not found in output';
-    }
+  }
+});
+
+sshxProcess.stderr.on('data', (data) => {
+  const output = data.toString();
+  stderrData += output;
+  console.log('SSHX stderr:', output);
+  
+  // Try to extract link from stderr
+  const linkMatch = output.match(/https:\/\/sshx\.io\/s\/[a-zA-Z0-9#_-]+/);
+  if (linkMatch) {
+    sshxLink = linkMatch[0];
+    console.log('SSHX Link captured:', sshxLink);
+  }
+});
+
+sshxProcess.on('error', (error) => {
+  console.error('Failed to start sshx:', error);
+  sshxLink = 'error: ' + error.message;
+});
+
+sshxProcess.on('close', (code) => {
+  console.log(`sshx process exited with code ${code}`);
+  if (sshxLink === 'initializing...') {
+    sshxLink = 'link not found in output';
   }
 });
 
